@@ -1,0 +1,42 @@
+DeepShield AI - Deepfake Analysis Explanation
+
+This document explains in detail how the DeepShield AI application analyzes a video to determine if it is a real video or a deepfake. The system uses a Dual-Layer Architecture that combines AI models with Blockchain verification.
+
+==================================================
+LAYER 1: AI Model verification (ai_pipeline.py)
+==================================================
+When a video is uploaded, the backend first passes it through an AI pipeline that extracts and evaluates multiple micro-metrics. The system processes up to 50 frames of the video using OpenCV to provide near real-time processing.
+
+1. Eye Blink Detection (MediaPipe)
+The system uses Google's MediaPipe FaceMesh to detect facial landmarks frame-by-frame. It calculates the Eye Aspect Ratio (EAR) to track blinks. Low-quality deepfakes often lack natural blink patterns. The system counts "blink anomalies" (e.g., when regular eye blinks are missing). 
+
+2. Lip-Sync Mismatch Analysis (Librosa)
+The pipeline extracts the audio track from the video. It evaluates the synchronization between the audio phonemes and the physical lip movements of the speaker's face. 
+
+3. Temporal Inconsistency (CNN + LSTM simulation)
+Deepfakes often contain subtle inconsistencies between sequential frames (e.g., flickering, spatial artifacts). The system evaluates these inconsistencies over time, assigning a score representing the lack of smooth, physical continuity.
+
+4. The Confidence Score Calculation
+The findings from these three micro-metrics are combined into a weighted mathematical formula:
+Confidence Score = (Blink Anomalies * 4) + (Lip-Sync Mismatch * 0.5) + (Temporal Inconsistency * 0.5)
+
+To finalize the evaluation:
+- The score is capped between a minimum of 0 and a maximum of 99.
+- If the Final Confidence Score is GREATER THAN 40, the video is flagged as "DEEPFAKE".
+- If the Score is 40 or below, it is flagged as "REAL".
+
+==================================================
+LAYER 2: Blockchain Verification (blockchain.py)
+==================================================
+To ensure data integrity and prevent tampering, the application also includes a cryptographic ledger layer.
+
+1. Cryptographic Hashing (SHA-256)
+As soon as the video is received, the backend generates a secure SHA-256 hash of the raw video file bytes. This hash acts as a unique digital fingerprint.
+
+2. Ledger Cache Lookup
+Before running the intensive AI pipeline, the system checks the SQLite database / blockchain ledger to see if this specific video (based on its hash fingerprint) has been analyzed before. If an existing record is found, the system instantly returns the cached result, saving immense processing power.
+
+3. Smart Contract Storage (Web3)
+If the video is new, the system attempts to connect to an Ethereum Testnet (like Ganache or Infura) using Web3. It simulates interacting with a smart contract to immutably store the video's hash in the blockchain, establishing proof of existence and analysis. Ensure that the verification status ("Verified") is saved along with the AI results.
+
+Note: In the current development environment, some of these complex models (like the CNN/LSTM and Web3 contract interaction) run using simulated placeholder calculations to allow the application to easily run locally without heavy GPU requirements.
