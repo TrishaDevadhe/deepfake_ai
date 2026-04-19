@@ -9,7 +9,7 @@ export default {
       colors: {
         darkBg: '#0b0f19',
         cardBg: '#151c2a',
-        primary: '#3b82f6',
+        primary: '#003282',
         accent: '#10b981',
         danger: '#ef4444'
       }
