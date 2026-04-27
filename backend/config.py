@@ -26,3 +26,10 @@ class Config:
     
     # Toggle Decord processing. If decord fails to load or import, fallback will be PyAV
     USE_DECORD = os.getenv("USE_DECORD", "true").lower() == "true"
+
+    # --- Training Configuration --- #
+    LEARNING_RATE = float(os.getenv("LEARNING_RATE", "1e-4"))
+    NUM_EPOCHS = int(os.getenv("NUM_EPOCHS", "10"))
+    TRAIN_DATA_PATH = os.getenv("TRAIN_DATA_PATH", "data/train")
+    VAL_DATA_PATH = os.getenv("VAL_DATA_PATH", "data/val")
+    WEIGHT_DECAY = float(os.getenv("WEIGHT_DECAY", "1e-5"))

@@ -25,6 +25,48 @@ except ImportError:
         USE_TORCH_COMPILE = USE_GPU and hasattr(torch, "compile")
         USE_DECORD = True
 
+# Robust Face Detector Wrapper
+class RobustFaceDetector:
+    def __init__(self):
+        self.mp_face = None
+        self.cv2_face = None
+        try:
+            import mediapipe as mp
+            if hasattr(mp, 'solutions') and hasattr(mp.solutions, 'face_detection'):
+                self.mp_face = mp.solutions.face_detection.FaceDetection(min_detection_confidence=0.5)
+                print("Using MediaPipe for face detection.")
+        except Exception:
+            pass
+        
+        if self.mp_face is None:
+            # Fallback to CV2 Haar Cascades
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            self.cv2_face = cv2.CascadeClassifier(cascade_path)
+            print("Using CV2 Haar Cascades for face detection (MediaPipe unavailable).")
+
+    def detect(self, frame_rgb):
+        if self.mp_face:
+            results = self.mp_face.process(frame_rgb)
+            if hasattr(results, 'detections') and results.detections:
+                detection = results.detections[0]
+                bboxC = detection.location_data.relative_bounding_box
+                ih, iw, _ = frame_rgb.shape
+                x, y, w, h = int(bboxC.xmin * iw), int(bboxC.ymin * ih), int(bboxC.width * iw), int(bboxC.height * ih)
+                return x, y, w, h
+        elif self.cv2_face:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+            faces = self.cv2_face.detectMultiScale(gray, 1.1, 4)
+            if len(faces) > 0:
+                return faces[0]
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.mp_face:
+            self.mp_face.close()
+
 def load_video_reader():
     if Config.USE_DECORD:
         try:
@@ -89,14 +131,12 @@ def load_model():
 DF_MODEL = load_model()
 
 def extract_and_align_face(frame_rgb, face_detector):
-    results = face_detector.process(frame_rgb)
-    if not hasattr(results, 'detections') or not results.detections:
+    detection = face_detector.detect(frame_rgb)
+    if detection is None:
         return None
         
-    detection = results.detections[0] # take primary face
-    bboxC = detection.location_data.relative_bounding_box
+    x, y, w, h = detection
     ih, iw, _ = frame_rgb.shape
-    x, y, w, h = int(bboxC.xmin * iw), int(bboxC.ymin * ih), int(bboxC.width * iw), int(bboxC.height * ih)
     
     # Expand crop slightly
     margin_x, margin_y = int(w * 0.1), int(h * 0.1)
@@ -124,15 +164,12 @@ def analyze_video(file_path: str):
     extraction_start = time.time()
     try:
         if decord_mod is not None:
-            # Optimal Decord extraction using batch fast-read
             vr = decord_mod.VideoReader(file_path, ctx=decord_mod.cpu(0))
             total_frames = len(vr)
             frame_indices = list(range(0, total_frames, Config.FRAME_SKIP_RATE))
-            # Batch extraction
             frames_tensor = vr.get_batch(frame_indices).asnumpy()
             rgb_frames = list(frames_tensor)
         else:
-            # Fallback PyAV Extraction
             container = av.open(file_path)
             for i, frame in enumerate(container.decode(video=0)):
                 if i % Config.FRAME_SKIP_RATE == 0:
@@ -144,15 +181,12 @@ def analyze_video(file_path: str):
         
     extraction_time = time.time() - extraction_start
 
-    # 2. Detection Phase (Parallel via localized MediaPipe objects)
+    # 2. Detection Phase (Parallel)
     detection_start = time.time()
     batch_tensors = []
-    mp_face_detection = mp.solutions.face_detection
     
-    # Using ThreadPool to process face extraction
-    def process_face(frame_rgb):
-        # We instantiate FaceDetection per thread/call to avoid MediaPipe context issues
-        with mp_face_detection.FaceDetection(min_detection_confidence=0.5) as local_face_detector:
+    def process_frame(frame_rgb):
+        with RobustFaceDetector() as local_face_detector:
             gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
             lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
             
@@ -162,7 +196,7 @@ def analyze_video(file_path: str):
             return (lap_var, None, False)
 
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as executor:
-        results = list(executor.map(process_face, rgb_frames))
+        results = list(executor.map(process_frame, rgb_frames))
         
     for lap_var, tensor, detected in results:
         laplacian_vars.append(lap_var)
@@ -182,7 +216,6 @@ def analyze_video(file_path: str):
             input_batch = torch.stack(batch).to(Config.DEVICE)
             
             if isinstance(DF_MODEL, torch.nn.Module):
-                # PyTorch Inference
                 with torch.no_grad():
                     if Config.USE_MIXED_PRECISION and Config.USE_GPU:
                         with torch.cuda.amp.autocast():
@@ -193,11 +226,8 @@ def analyze_video(file_path: str):
                     probs = torch.sigmoid(outputs).cpu().numpy().flatten()
                     frame_scores.extend((probs * 100.0).tolist())
             else:
-                # ONNX Inference Wait we need sigmoid
                 ort_inputs = {DF_MODEL.get_inputs()[0].name: input_batch.cpu().numpy()}
                 ort_outs = DF_MODEL.run(None, ort_inputs)
-                
-                # Numpy sigmoid
                 probs = 1 / (1 + np.exp(-ort_outs[0]))
                 probs = probs.flatten()
                 frame_scores.extend((probs * 100.0).tolist())
@@ -208,25 +238,19 @@ def analyze_video(file_path: str):
     print(f"[Profiling] Frames Processed: {len(rgb_frames)}")
     print(f"[Profiling] Extract: {extraction_time:.2f}s | Detect: {detection_time:.2f}s | Inference: {inference_time:.2f}s | Total: {total_time:.2f}s")
 
-    # Aggregate Predictions over frames
     if not frame_scores:
-        aggregated_score = 50.0 # Unknown if no faces detected
+        aggregated_score = 50.0
     else:
         raw_dl_score = np.mean(frame_scores)
-        
         avg_lap = np.mean(laplacian_vars) if laplacian_vars else 100
         spatial_penalty = 25 if (avg_lap < 10 or avg_lap > 8000) else 0
         
         if not os.path.exists(MODEL_PATH) and Config.MODEL_TYPE != "onnx":
-            # Simulated confident output when missing weights using heuristics
             aggregated_score = min(raw_dl_score * 0.2 + spatial_penalty + (blink_anomalies * 2), 99.0)
         else:
-            # Active Deep Learning Mode
             aggregated_score = raw_dl_score
             
-    # Mock audio sync tracking
     sync_mismatch = np.random.uniform(5, 20)
-    
     is_deepfake = 'DEEPFAKE' if aggregated_score > 40 else 'REAL'
     
     return {

@@ -21,41 +21,42 @@ DeepShield AI is a full-stack, dual-layer deepfake detection system. It employs 
 The backend requires Python 3.8+.
 
 ```bash
-cd deepshield_ai/backend
-
-# Create a virtual environment (optional but recommended)
+cd backend
 python -m venv venv
-venv\Scripts\activate   # (Windows)
-
-# Install dependencies
+venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run the backend
 uvicorn main:app --reload --port 8000
 ```
-*Note: Make sure your system has the required C++ runtimes for Mediapipe and OpenCV.*
 
 ### 2. Setup Frontend (React + Vite + Tailwind)
-The frontend requires Node.js to be installed.
-
 ```bash
-cd deepshield_ai/frontend
-
-# Install dependencies
-
+cd frontend
 npm install
-# Start the development server
 npm run dev
 ```
 
-### 3. Generate a Sample Test Video
-A Python script has been provided to generate a test video if you don't have one handy.
+---
 
+## 🧠 Training the Model for Better Output
+
+To improve detection accuracy, you can train the model on your own dataset.
+
+### 1. Prepare Your Dataset
+Extract faces from your "real" and "fake" videos to create an image-based dataset.
 ```bash
-cd deepshield_ai
-python create_test_video.py
+cd backend
+python prepare_dataset.py --video path/to/real_video.mp4 --output data/train/real --skip 10
+python prepare_dataset.py --video path/to/fake_video.mp4 --output data/train/fake --skip 10
 ```
-This will output `sample_test_video.mp4` which you can upload via the Dashboard.
+Repeat for validation data into `data/val/real` and `data/val/fake`.
+
+### 2. Run Training
+Adjust hyperparameters in `backend/config.py` if needed, then run:
+```bash
+cd backend
+python train.py
+```
+The best model will be saved to `backend/services/xception_deepfake_detector.pth` and automatically used by the AI pipeline.
 
 ---
 
